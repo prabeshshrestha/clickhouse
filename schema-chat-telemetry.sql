@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS aroundtrail.chat_turns
     -- tool_messages_total is the true count. Collapsing them loses that.
     tool_calls          UInt16  DEFAULT 0,
     tool_messages_total UInt16  DEFAULT 0,
+    -- WHICH tools, in call ORDER (added 2026-09-05, when the sink was built).
+    -- Ordered, not a set: "searched, found nothing, searched again" and
+    -- "searched once" are the same set and very different turns. Capped at 64
+    -- names per turn in stream.py -- a turn near that is a ReAct loop, which
+    -- tool_calls already reports without repeating the names.
+    tool_names          Array(LowCardinality(String)),
 
     -- Scores, from trace_scores(). UInt8 0/1 rather than Nullable: a clarify
     -- turn genuinely has no grounding_pass, so scores_applied says which of the

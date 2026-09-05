@@ -1,0 +1,13 @@
+<clickhouse>
+    <!-- TLS-terminated native protocol. Drop this file if you are not
+         publishing 9440. tcp_port (9000, plaintext) stays unpublished. -->
+    <tcp_port_secure>9440</tcp_port_secure>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/certs/fullchain.pem</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/certs/privkey.pem</privateKeyFile>
+            <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+        </server>
+    </openSSL>
+</clickhouse>

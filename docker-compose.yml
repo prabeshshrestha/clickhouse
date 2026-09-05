@@ -1,0 +1,57 @@
+# Dokploy > Create Application > Docker Compose
+# Paste this as the compose file.
+#
+# Image tag: 26.3-alpine. This tracks PATCH releases within the 26.3 line
+# (26.3.30.9 as of 2026-09-04) and will never cross a major/minor boundary,
+# so a Dokploy redeploy cannot trigger the irreversible upgrade that :latest
+# can -- ClickHouse does not support downgrading once parts are written in a
+# newer format. It does still move on redeploy. For a fully frozen pin use
+# 26.3.30.9-alpine instead and bump it deliberately.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: playground
+      CLICKHOUSE_USER: ${CH_USER}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+      # Dokploy File Mounts land in ../files/ relative to the compose file
+      - ../files/config.d:/etc/clickhouse-server/config.d:ro
+      - ../files/users.d:/etc/clickhouse-server/users.d:ro
+      # Only needed for the TLS native port (9440). Drop if not using it.
+      - ../files/certs:/etc/clickhouse-server/certs:ro
+    ports:
+      # Native protocol, TLS-terminated by ClickHouse itself. Traefik cannot
+      # route this -- it is not HTTP. Publishing it bypasses ufw (see notes).
+      - "9440:9440"
+    deploy:
+      resources:
+        limits:
+          memory: 4G          # match to the box; pair with config.d/10-memory.xml
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      # HTTP interface (8123) behind Traefik + Let's Encrypt
+      - traefik.http.routers.clickhouse.rule=Host(`clickhouse.example.com`)
+      - traefik.http.routers.clickhouse.entrypoints=websecure
+      - traefik.http.routers.clickhouse.tls.certresolver=letsencrypt
+      - traefik.http.services.clickhouse.loadbalancer.server.port=8123
+
+volumes:
+  clickhouse-data:
+  clickhouse-logs:
+
+networks:
+  dokploy-network:
+    external: true

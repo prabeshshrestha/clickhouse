@@ -1,0 +1,20 @@
+<clickhouse>
+    <users>
+        <!-- The image ships a passwordless `default`. Whether CLICKHOUSE_USER
+             removes its passwordless access varies by image version, so pin it
+             shut here rather than trusting the env var. `::1` and `127.0.0.1`
+             only = reachable via `docker exec`, never from the network. -->
+        <default>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+        </default>
+    </users>
+    <profiles>
+        <default>
+            <max_memory_usage>2000000000</max_memory_usage>
+            <max_execution_time>60</max_execution_time>
+        </default>
+    </profiles>
+</clickhouse>

@@ -1,0 +1,10 @@
+<clickhouse>
+    <!-- Older CH sizes itself from HOST ram, not the cgroup limit. This is the
+         setting that actually stops it OOM-killing the rest of the box.
+         Ratio is of the container limit when cgroups are honoured; the absolute
+         cap below is the belt-and-braces version. Set it to ~80% of the
+         deploy.resources.limits.memory in the compose file. -->
+    <max_server_memory_usage_to_ram_ratio>0.7</max_server_memory_usage_to_ram_ratio>
+    <max_server_memory_usage>3221225472</max_server_memory_usage> <!-- 3 GiB -->
+    <mark_cache_size>536870912</mark_cache_size>
+</clickhouse>

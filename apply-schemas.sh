@@ -36,7 +36,7 @@ fi
 echo "==> preflight: $CH_URL"
 got="$(curl -sS --fail-with-body --max-time 15 \
         --user "$CH_USER:$CH_PASSWORD" \
-        --data-urlencode 'query=SELECT 1' \
+        --data-binary 'SELECT 1' \
         "$CH_URL/" 2>&1)" || { echo "preflight FAILED: $got" >&2; exit 1; }
 [[ "$got" == "1" ]] || { echo "preflight returned unexpected: $got" >&2; exit 1; }
 echo "    ok (valid cert, auth accepted)"
@@ -93,15 +93,15 @@ fi
 # no TTL is the failure that matters, because it is the privacy commitment.
 echo
 echo "==> verify"
-curl -sS --user "$CH_USER:$CH_PASSWORD" --data-urlencode "query=
-  SELECT name, sorting_key, if(empty(engine_full), '?', 'ok') AS created
-  FROM system.tables WHERE database = 'aroundtrail' ORDER BY name FORMAT PrettyCompact
+curl -sS --user "$CH_USER:$CH_PASSWORD" --data-binary "
+  SELECT name, sorting_key FROM system.tables
+  WHERE database = 'aroundtrail' ORDER BY name FORMAT PrettyCompact
 " "$CH_URL/"
 
 echo
 echo "==> TTLs (chat_texts MUST show 90 DAY)"
-curl -sS --user "$CH_USER:$CH_PASSWORD" --data-urlencode "query=
-  SELECT table, extract(engine_full, 'TTL[^S]*') AS ttl
+curl -sS --user "$CH_USER:$CH_PASSWORD" --data-binary "
+  SELECT table, extract(engine_full, 'TTL.*') AS ttl
   FROM system.tables WHERE database = 'aroundtrail' ORDER BY table FORMAT PrettyCompact
 " "$CH_URL/"
 

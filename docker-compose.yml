@@ -1,12 +1,16 @@
-# Dokploy > Create Application > Docker Compose
-# Paste this as the compose file.
+# ClickHouse on Dokploy -- single node, no public ports.
 #
-# Image tag: 26.3-alpine. This tracks PATCH releases within the 26.3 line
-# (26.3.30.9 as of 2026-09-04) and will never cross a major/minor boundary,
-# so a Dokploy redeploy cannot trigger the irreversible upgrade that :latest
-# can -- ClickHouse does not support downgrading once parts are written in a
-# newer format. It does still move on redeploy. For a fully frozen pin use
-# 26.3.30.9-alpine instead and bump it deliberately.
+# Image tag 26.3-alpine tracks PATCH releases inside the 26.3 line and never
+# crosses a minor boundary, so a redeploy cannot trigger the irreversible
+# upgrade that :latest can (ClickHouse cannot downgrade once parts are written
+# in a newer format). For a frozen pin use 26.3.30.9-alpine.
+#
+# All server config is inline below via `configs:` rather than Dokploy File
+# Mounts -- one artifact, nothing to keep in sync, and no bind-mount source
+# that Docker silently turns into an empty directory when it is missing.
+# Requires Compose >= 2.23 for `configs.content`; check `docker compose version`.
+#
+# Required in Dokploy > Environment:  CH_USER, CH_PASSWORD
 
 services:
   clickhouse:
@@ -16,6 +20,7 @@ services:
       CLICKHOUSE_DB: playground
       CLICKHOUSE_USER: ${CH_USER}
       CLICKHOUSE_PASSWORD: ${CH_PASSWORD}
+      # Aliased to CLICKHOUSE_ACCESS_MANAGEMENT inside the entrypoint.
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ulimits:
       nofile:
@@ -24,26 +29,68 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
-      # Dokploy File Mounts land in ../files/ relative to the compose file
-      - ../files/config.d:/etc/clickhouse-server/config.d:ro
-      # users.d must NOT be mounted as a read-only DIRECTORY: the entrypoint
-      # writes default-user.xml into it on every boot to create CLICKHOUSE_USER.
-      # Mount the single override file instead, leaving the dir writable.
-      - ../files/users.d/99-limits.xml:/etc/clickhouse-server/users.d/99-limits.xml:ro
+    configs:
+      # NOTE: users.d receives a single FILE, never a read-only directory --
+      # the entrypoint writes users.d/default-user.xml on every boot to create
+      # CLICKHOUSE_USER. A read-only users.d mount is a guaranteed crash loop.
+      - source: ch_memory
+        target: /etc/clickhouse-server/config.d/10-memory.xml
+      - source: ch_logttl
+        target: /etc/clickhouse-server/config.d/20-system-log-ttl.xml
+      - source: ch_limits
+        target: /etc/clickhouse-server/users.d/99-limits.xml
     deploy:
       resources:
         limits:
-          memory: 4G          # match to the box; pair with config.d/10-memory.xml
+          memory: 4G          # keep ch_memory below in step with this
     networks:
       - dokploy-network
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
-      # HTTP interface (8123) behind Traefik + Let's Encrypt
+      # CHANGE THIS HOST, or delete all six labels to stay fully private.
       - traefik.http.routers.clickhouse.rule=Host(`clickhouse.example.com`)
       - traefik.http.routers.clickhouse.entrypoints=websecure
       - traefik.http.routers.clickhouse.tls.certresolver=letsencrypt
       - traefik.http.services.clickhouse.loadbalancer.server.port=8123
+
+configs:
+  ch_memory:
+    content: |
+      <clickhouse>
+          <!-- Older CH sizes itself from HOST ram rather than the cgroup limit;
+               this is what actually stops it OOM-killing the rest of the box.
+               Keep max_server_memory_usage at ~75-80% of deploy.limits.memory. -->
+          <max_server_memory_usage_to_ram_ratio>0.7</max_server_memory_usage_to_ram_ratio>
+          <max_server_memory_usage>3221225472</max_server_memory_usage>
+          <mark_cache_size>536870912</mark_cache_size>
+      </clickhouse>
+
+  ch_logttl:
+    content: |
+      <clickhouse>
+          <!-- An idle instance left running for months dies of system-log
+               growth. This instance's likely future, so cap it now. -->
+          <query_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></query_log>
+          <trace_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></trace_log>
+          <part_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></part_log>
+          <metric_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></metric_log>
+          <asynchronous_metric_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></asynchronous_metric_log>
+      </clickhouse>
+
+  ch_limits:
+    content: |
+      <clickhouse>
+          <!-- The entrypoint's default-user.xml REMOVES the `default` user and
+               creates CLICKHOUSE_USER, so no <default> user block is needed
+               here. 99- sorts after it regardless. -->
+          <profiles>
+              <default>
+                  <max_memory_usage>2000000000</max_memory_usage>
+                  <max_execution_time>60</max_execution_time>
+              </default>
+          </profiles>
+      </clickhouse>
 
 volumes:
   clickhouse-data:

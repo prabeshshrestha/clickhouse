@@ -26,13 +26,10 @@ services:
       - clickhouse-logs:/var/log/clickhouse-server
       # Dokploy File Mounts land in ../files/ relative to the compose file
       - ../files/config.d:/etc/clickhouse-server/config.d:ro
-      - ../files/users.d:/etc/clickhouse-server/users.d:ro
-      # Only needed for the TLS native port (9440). Drop if not using it.
-      - ../files/certs:/etc/clickhouse-server/certs:ro
-    ports:
-      # Native protocol, TLS-terminated by ClickHouse itself. Traefik cannot
-      # route this -- it is not HTTP. Publishing it bypasses ufw (see notes).
-      - "9440:9440"
+      # users.d must NOT be mounted as a read-only DIRECTORY: the entrypoint
+      # writes default-user.xml into it on every boot to create CLICKHOUSE_USER.
+      # Mount the single override file instead, leaving the dir writable.
+      - ../files/users.d/99-limits.xml:/etc/clickhouse-server/users.d/99-limits.xml:ro
     deploy:
       resources:
         limits:

@@ -1,0 +1,12 @@
+<clickhouse>
+    <!-- The image entrypoint writes users.d/default-user.xml on every boot:
+         it REMOVES the `default` user entirely and creates CLICKHOUSE_USER
+         with a password. So no <default> lockdown is needed here -- and this
+         file is named 99- so it merges after that one either way. -->
+    <profiles>
+        <default>
+            <max_memory_usage>2000000000</max_memory_usage>
+            <max_execution_time>60</max_execution_time>
+        </default>
+    </profiles>
+</clickhouse>

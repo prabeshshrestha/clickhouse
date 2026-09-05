@@ -43,16 +43,21 @@ services:
       resources:
         limits:
           memory: 4G          # keep ch_memory below in step with this
+    ports:
+      # PUBLIC, PLAINTEXT. Deliberate choice, 2026-09-05.
+      #
+      # There is no subdomain, so there is no Let's Encrypt certificate and no
+      # TLS: this is HTTP on the open internet. The password travels as base64
+      # Basic auth, i.e. readable by anything on the path. A ufw rule will NOT
+      # close this -- Docker inserts its own rules ahead of ufw's chain, so
+      # publishing the port is what exposes it, and only removing this line or
+      # rebinding it to 127.0.0.1 un-exposes it.
+      #
+      # To get TLS later without buying a domain: use 62.169.19.91.sslip.io as
+      # the Traefik Host() rule -- Let's Encrypt issues for it -- and drop this.
+      - "8123:8123"
     networks:
       - dokploy-network
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      # CHANGE THIS HOST, or delete all six labels to stay fully private.
-      - traefik.http.routers.clickhouse.rule=Host(`clickhouse.example.com`)
-      - traefik.http.routers.clickhouse.entrypoints=websecure
-      - traefik.http.routers.clickhouse.tls.certresolver=letsencrypt
-      - traefik.http.services.clickhouse.loadbalancer.server.port=8123
 
 configs:
   ch_memory:

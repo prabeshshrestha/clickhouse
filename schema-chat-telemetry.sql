@@ -154,3 +154,155 @@ ALTER TABLE aroundtrail.chat_texts
 --       -- which conversation_id CAN be, via conversations.user_id.
 -- (a) is the honest one. This is NOT done, and shipping chat_texts without it
 -- means the DSAR erase is incomplete.
+
+-- ---------------------------------------------------------------------------
+-- chat_tool_calls -- ONE ROW PER TOOL CALL. Added 2026-09-05.
+-- ---------------------------------------------------------------------------
+-- `chat_turns.tool_names` records that a turn called
+-- `search_destinations -> search_destinations`. It cannot say whether that was
+-- "Kathmandu" then "Pokhara" (correct: two cities) or "Kathmandu" twice (the
+-- agent re-asking because the first returned nothing). Those are the same row
+-- there and OPPOSITE findings, which is the gap this table closes.
+--
+-- 90-DAY TTL, matching chat_texts rather than chat_turns' 24 months. `args` is
+-- model-composed FROM the traveller's question and echoes it closely -- a search
+-- for "short treks near Pokhara" carries the question in it. Putting that on the
+-- metrics clock would quietly keep traveller-derived text for two years, past
+-- the window frontend-nepal/src/app/privacy/page.tsx publishes.
+--
+-- The long-horizon question survives the shorter window: "which tool sequences
+-- correlate with dropped grounding" is answerable from chat_turns.tool_names,
+-- which keeps its 24 months. This table is the DETAIL view, and detail is what
+-- you look at recently.
+CREATE TABLE IF NOT EXISTS aroundtrail.chat_tool_calls
+(
+    event_time      DateTime64(3)                CODEC(Delta, ZSTD(1)),
+    event_date      Date MATERIALIZED toDate(event_time),
+
+    -- request_id joins to BOTH chat_turns and chat_texts; seq restores order
+    -- within the turn, which is the whole point of the table.
+    request_id      String,
+    conversation_id String,
+    trace_id        String DEFAULT '',
+    seq             UInt16 DEFAULT 0,
+
+    country_slug    LowCardinality(String),
+    environment     LowCardinality(String) DEFAULT 'production',
+    -- LowCardinality: the tool set is a fixed vocabulary of ~15 names.
+    tool_name       LowCardinality(String),
+
+    -- The tool's arguments as JSON. Bounded in the sink -- an unbounded blob
+    -- here is how a single pathological turn becomes a large part.
+    args            String CODEC(ZSTD(3)),
+
+    -- WHAT CAME BACK, without storing whole result sets. result_count answers
+    -- "did it find anything" (a 0 is the signal that explains a retry), and the
+    -- slugs answer "did it find the RIGHT thing" for the first handful.
+    result_count    UInt16 DEFAULT 0,
+    result_slugs    Array(String) CODEC(ZSTD(3)),
+
+    -- Per-call latency, paired off the LangGraph run_id between on_tool_start
+    -- and on_tool_end. chat_turns.latency_ms is the whole streamed turn; this
+    -- is what says WHICH tool owned it.
+    duration_ms     UInt32 DEFAULT 0,
+    error           String DEFAULT ''
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(event_time)
+-- Same low-to-high-with-time-last rule as the other two, and the same
+-- consequence: a query that does not filter environment + country_slug scans
+-- everything. tool_name sits third because "how does search_trails behave" is
+-- the question this table exists for.
+ORDER BY (environment, country_slug, tool_name, event_time)
+TTL event_date + INTERVAL 90 DAY DELETE
+SETTINGS index_granularity = 8192;
+
+-- Joining a turn to its calls skips the ORDER BY prefix entirely.
+ALTER TABLE aroundtrail.chat_tool_calls
+    ADD INDEX IF NOT EXISTS idx_request request_id TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- ---------------------------------------------------------------------------
+-- chat_log -- the ClickStack/HyperDX source. Added 2026-09-05.
+-- ---------------------------------------------------------------------------
+-- Why a view: HyperDX's "Log" source type expects an OTel-log-shaped table, and
+-- these three are hand-rolled MergeTrees in a different database that ClickStack
+-- knows nothing about. Naming the columns EXACTLY as `otel.otel_logs` names them
+-- (Timestamp / Body / SeverityText / ServiceName / LogAttributes /
+-- ResourceAttributes) is what lets every field in the source form point at a real
+-- column. **Leave no expression field blank in that form** -- HyperDX interpolates
+-- an expression as a PREFIX, so an empty one becomes a bare `.foo` and errors.
+--
+-- LEFT JOIN, not INNER, in both directions from chat_turns: chat_texts and
+-- chat_tool_calls expire at 90 days while chat_turns keeps 24 months. An inner
+-- join would make a turn's metrics VANISH on the day its text expired, which
+-- reads as data loss and is actually the retention design working.
+CREATE OR REPLACE VIEW aroundtrail.chat_log AS
+WITH tools AS (
+    SELECT
+        request_id,
+        -- Readable in a log feed and searchable as a substring, which an
+        -- Array(Tuple) would not be.
+        arrayStringConcat(
+            groupArray(concat(tool_name, '(', args, ') -> ', toString(result_count))),
+            '  |  '
+        ) AS tool_detail,
+        sum(duration_ms) AS tool_ms
+    FROM aroundtrail.chat_tool_calls
+    GROUP BY request_id
+)
+SELECT
+    t.event_time            AS Timestamp,
+    -- Body is the log line. The traveller's question is the most useful thing
+    -- to read in a feed, and making it Body is what makes free-text search
+    -- search the question.
+    x.prompt                AS Body,
+    -- Colour-codes the feed so the turns worth looking at surface themselves.
+    multiIf(t.grounding_outcome = 'error', 'error',
+            t.grounding_outcome IN ('dropped', 'no_evidence'), 'warn',
+            t.grounding_outcome = 'clarify', 'debug',
+            'info')         AS SeverityText,
+    -- Makes HyperDX's service filter an intent filter for free.
+    concat(t.country_slug, '-', t.intent) AS ServiceName,
+    -- Points at LANGFUSE, not at otel.otel_traces. Do NOT wire a correlated
+    -- trace source to it -- the id would resolve to nothing. It is here so a
+    -- turn can be opened in Langfuse by hand while the two are compared.
+    t.trace_id              AS TraceId,
+    t.request_id            AS SpanId,
+    map(
+        'environment',        t.environment,
+        'country_slug',       t.country_slug,
+        'intent',             t.intent,
+        'source',             t.source,
+        'trip_subtype',       t.trip_subtype,
+        'grounding_outcome',  t.grounding_outcome,
+        'tool_path',          arrayStringConcat(t.tool_names, ' -> '),
+        'tool_detail',        coalesce(tl.tool_detail, ''),
+        'tool_ms',            toString(coalesce(tl.tool_ms, 0)),
+        'tool_calls',         toString(t.tool_calls),
+        'tool_messages_total',toString(t.tool_messages_total),
+        'answer_delivered',   toString(t.answer_delivered),
+        'grounding_pass',     toString(t.grounding_pass),
+        'has_links',          toString(t.has_links),
+        'scores_applied',     toString(t.scores_applied),
+        'filter_ran',         toString(t.filter_ran),
+        'deleted_pct',        toString(t.deleted_pct),
+        'dropped_sentences',  toString(t.dropped_sentences),
+        'answer_len',         toString(t.answer_len),
+        'latency_ms',         toString(t.latency_ms),
+        'conversation_id',    t.conversation_id,
+        'error',              t.error
+    )                       AS LogAttributes,
+    map('service.name', concat(t.country_slug, '-', t.intent)) AS ResourceAttributes,
+    t.tool_names            AS tool_names,
+    coalesce(tl.tool_detail, '') AS tool_detail,
+    t.latency_ms            AS latency_ms,
+    t.intent                AS intent,
+    t.grounding_outcome     AS grounding_outcome,
+    t.environment           AS environment,
+    t.country_slug          AS country_slug,
+    t.conversation_id       AS conversation_id,
+    x.completion            AS completion,
+    x.dropped_samples       AS dropped_samples
+FROM aroundtrail.chat_turns AS t
+LEFT JOIN aroundtrail.chat_texts AS x USING (request_id)
+LEFT JOIN tools AS tl USING (request_id);

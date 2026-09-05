@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS aroundtrail.chat_turns
 
     -- Dimensions, from trace_dimensions().
     country_slug        LowCardinality(String),
+    -- See the same column in schema-site-events.sql: laptop turns and production
+    -- turns share these tables, and this is what keeps them apart.
+    environment         LowCardinality(String) DEFAULT 'production',
     intent              LowCardinality(String),           -- info | plan | ...
     source              LowCardinality(String),           -- chat | plan
     trip_subtype        LowCardinality(String) DEFAULT '',
@@ -73,16 +76,17 @@ PARTITION BY toYYYYMM(event_time)
 -- decision that cannot be walked back.
 --
 -- Low-to-high cardinality with time last (schema-pk-cardinality-order):
---   country_slug   ~6 values
+--   environment    2 values
+--   country_slug   ~6
 --   intent         ~4
 --   grounding_outcome ~5
 --   event_time     high
 --
 -- Chosen because every real question filters country -> intent -> outcome ->
 -- window, e.g. "grounding pass rate for nepal plan turns last week". Queries
--- MUST include country_slug to get index pruning (schema-pk-filter-on-orderby);
+-- MUST include environment + country_slug to get index pruning (schema-pk-filter-on-orderby);
 -- a query filtering only on intent scans everything.
-ORDER BY (country_slug, intent, grounding_outcome, event_time)
+ORDER BY (environment, country_slug, intent, grounding_outcome, event_time)
 TTL event_date + INTERVAL 24 MONTH DELETE
 SETTINGS index_granularity = 8192;
 
@@ -109,6 +113,7 @@ CREATE TABLE IF NOT EXISTS aroundtrail.chat_texts
     request_id      String,
     trace_id        String DEFAULT '',
     country_slug    LowCardinality(String),
+    environment     LowCardinality(String) DEFAULT 'production',
 
     prompt          String CODEC(ZSTD(3)),
     completion      String CODEC(ZSTD(3)),
@@ -118,7 +123,7 @@ CREATE TABLE IF NOT EXISTS aroundtrail.chat_texts
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_time)
-ORDER BY (country_slug, event_time)
+ORDER BY (environment, country_slug, event_time)
 TTL event_date + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;
 

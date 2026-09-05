@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS aroundtrail.site_events
 
     name          LowCardinality(String),      -- browse.depth | search.miss | ...
     country_slug  LowCardinality(String),
+    -- 'production' | 'development'. Local dev opts in with TELEMETRY_ENABLED=true
+    -- (Telemetry.enabled?), so laptop rows WILL reach the same table. This column
+    -- keeps them from poisoning production aggregates -- and being first in the
+    -- ORDER BY means a query that omits it gets no index pruning, which is the
+    -- cheapest possible reminder to always filter on it.
+    environment   LowCardinality(String) DEFAULT 'production',
 
     -- Typed columns for the metadata keys that recur today. Per
     -- schema-json-when-to-use: typed columns for known keys, the Map below for
@@ -46,10 +52,10 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_time)
 -- IMMUTABLE (schema-pk-plan-before-creation).
 -- Low-to-high cardinality, time last (schema-pk-cardinality-order):
---   country_slug ~7 values, name ~2-10, event_time high.
--- Every real question is "for country X, event Y, over window Z".
--- A query that omits country_slug scans everything (schema-pk-filter-on-orderby).
-ORDER BY (country_slug, name, event_time)
+--   environment 2, country_slug ~7, name ~2-10, event_time high.
+-- Every real question is "in production, for country X, event Y, over window Z".
+-- A query omitting the prefix scans everything (schema-pk-filter-on-orderby).
+ORDER BY (environment, country_slug, name, event_time)
 TTL event_date + INTERVAL 12 MONTH DELETE
 SETTINGS index_granularity = 8192;
 
@@ -96,11 +102,12 @@ SETTINGS index_granularity = 8192;
 --
 --   SELECT query, count() AS n
 --   FROM aroundtrail.site_events
---   WHERE country_slug = 'tibet' AND name = 'search.miss'
+--   WHERE environment = 'production'
+--     AND country_slug = 'tibet' AND name = 'search.miss'
 --     AND event_date >= today() - 90
 --   GROUP BY query ORDER BY n DESC LIMIT 50;
 --
--- Note the WHERE leads with country_slug and name -- the ORDER BY prefix.
+-- Note the WHERE leads with environment, country_slug and name -- the ORDER BY prefix.
 --
 -- browse.depth answers the other one: which verticals do people page past 1 on,
 -- per country. That is a content-expansion signal the editorial plans currently

@@ -10,7 +10,8 @@
 # that Docker silently turns into an empty directory when it is missing.
 # Requires Compose >= 2.23 for `configs.content`; check `docker compose version`.
 #
-# Required in Dokploy > Environment:  CH_USER, CH_PASSWORD
+# Required in Dokploy > Environment:  CH_USER, CH_PASSWORD,
+#                                     OTLP_AUTH_TOKEN, CH_INGEST_PASSWORD
 
 services:
   clickhouse:
@@ -62,6 +63,69 @@ services:
       - traefik.http.routers.clickhouse.entrypoints=websecure
       - traefik.http.routers.clickhouse.tls.certresolver=letsencrypt
       - traefik.http.services.clickhouse.loadbalancer.server.port=8123
+
+  # ---------------------------------------------------------------------------
+  # Session replay + browser telemetry ingest.
+  #
+  # This is the ClickStack distribution of the OTel collector, NOT the upstream
+  # contrib image. The difference is the whole reason Client Sessions works: it
+  # ships the `routing/logs` connector that matches `attributes["rr-web.event"]`
+  # and diverts those log records to a second ClickHouse exporter writing
+  # `otel.hyperdx_sessions`. A plain contrib collector with a ClickHouse
+  # exporter gives you logs and traces and an EMPTY Sessions tab.
+  #
+  # It creates the whole `otel.*` schema itself on first write -- there is no
+  # schema file to apply here, unlike aroundtrail.*.
+  #
+  # Required in Dokploy > Environment (in addition to CH_USER / CH_PASSWORD):
+  #   OTLP_AUTH_TOKEN       bearer token browsers send. NOT A SECRET -- it ships
+  #                         in the client bundle. It is a spam gate, nothing more.
+  #   CH_INGEST_PASSWORD    password for the hyperdx_ingest SQL user (see
+  #                         create-ingest-user.sql -- run that FIRST).
+  otel-collector:
+    image: clickhouse/clickstack-otel-collector:latest
+    restart: unless-stopped
+    depends_on:
+      - clickhouse
+    environment:
+      # Plain HTTP over dokploy-network to the container next door: this hop
+      # never leaves the host, so terminating TLS on it would mean the
+      # collector chasing the Let's Encrypt cert for a name that resolves to
+      # the public IP -- a hairpin through Traefik for no gain.
+      #
+      # `clickhouse` is the compose SERVICE name, which Compose registers as a
+      # network alias on dokploy-network. That network is shared with every
+      # other Dokploy app on this box, so if anything else ever defines a
+      # service called `clickhouse`, this resolves to a coin flip. Rename both
+      # sides if that happens.
+      CLICKHOUSE_ENDPOINT: http://clickhouse:8123
+      CLICKHOUSE_USER: hyperdx_ingest
+      CLICKHOUSE_PASSWORD: ${CH_INGEST_PASSWORD}
+      HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE: otel
+      OTLP_AUTH_TOKEN: ${OTLP_AUTH_TOKEN}
+    deploy:
+      resources:
+        limits:
+          memory: 1G          # the image's memory_limiter is set at 1500 MiB
+    # NO `ports:` BLOCK, for the same reason ClickHouse has none. 4317 (gRPC)
+    # stays unreachable from outside entirely -- browsers speak OTLP/HTTP, and
+    # nothing else sends to this collector yet.
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      # A DIFFERENT sslip.io name from ClickHouse's, not a PathPrefix on the
+      # same one: ClickHouse's HTTP interface answers on every path, so a
+      # prefix router here would sit one Traefik priority rule away from
+      # silently swallowing browser telemetry into a SQL parser.
+      #
+      # sslip.io resolves any label prefix, so otel.<ip>.sslip.io -> <ip> with
+      # no DNS record to create; Let's Encrypt issues for it separately.
+      - traefik.http.routers.otelcol.rule=Host(`otel.62.169.19.91.sslip.io`)
+      - traefik.http.routers.otelcol.entrypoints=websecure
+      - traefik.http.routers.otelcol.tls.certresolver=letsencrypt
+      - traefik.http.services.otelcol.loadbalancer.server.port=4318
 
 configs:
   ch_memory:
